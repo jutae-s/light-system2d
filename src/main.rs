@@ -34,6 +34,10 @@ fn main() {
 const LAYER_WORLD: RenderLayers = RenderLayers::layer(0);
 const LAYER_SHADOW: RenderLayers = RenderLayers::layer(1);
 
+// spawn every mesh, camera and mask to display the light interacting with the mesh
+
+//setup 2 cameras, mask renderer and default camera
+//setup mesh and materials for object and light mesh
 fn setup_game(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -52,8 +56,8 @@ fn setup_game(
     let h = win.resolution.physical_height();
 
     let mask_handle = images.add(make_mask_image(w, h));
-
-    commands.spawn((
+    //camera that only renders 1 or 0, 1 if mesh has tag and layer shadow -
+    commands.spawn(( 
         Camera2d,
         Camera {
             order: -1, 
@@ -64,7 +68,7 @@ fn setup_game(
         MaskCam,
         LAYER_SHADOW,
     ));
-
+    //main cam
     commands.spawn((
         Camera2d,
         Camera { order: 0, ..default() },
@@ -73,7 +77,7 @@ fn setup_game(
     ));
 
 
-  
+    // create shadow material
     let material_handle = materials.add(CustomMaterial {
     color: LinearRgba::WHITE,   
     time: 0.0,
@@ -83,7 +87,7 @@ fn setup_game(
     }
     );
 
-    
+    //light mesh and light material
 let light_mesh = meshes.add(Rectangle::new(2.0, 2.0));
 let light_mat = light_materials.add(LightMaterial {
     
@@ -96,7 +100,7 @@ let light_mat = light_materials.add(LightMaterial {
     shadow_uv: Vec2::new(0.5, 0.5),
 
 });
-
+    //basic mesh to see if it interacts , you can change geometry
     let h: Handle<Mesh> = meshes.add(Triangle2d::default());
     let base_mesh = meshes.get(&h).unwrap();
 
@@ -105,7 +109,7 @@ let light_mat = light_materials.add(LightMaterial {
     }; 
 
 
-
+//spawn light with movement
 commands.spawn((
     Mesh2d(light_mesh.clone()),
     MeshMaterial2d(light_mat.clone()),
@@ -113,7 +117,7 @@ commands.spawn((
     MoveSpeed(50.0),
 ));
 
-
+    //shadow mesh
     commands.spawn((
         Mesh2d(meshes.add(shadow_mesh)),
         MeshMaterial2d(material_handle),
@@ -121,6 +125,7 @@ commands.spawn((
         ParallelogramObjectTag,
         LAYER_SHADOW,
     ));
+    //shadow caster mesh
      commands.spawn((
         Mesh2d(h.clone()),
         MeshMaterial2d(col_mats.add(Color::from(PURPLE))),
@@ -137,7 +142,7 @@ commands.spawn((
 }
 
 
-#[derive(Component)]
+#[derive(Component)] //
 struct ParallelogramObjectTag;
 
 #[derive(Component)]
@@ -243,6 +248,7 @@ fn update_light_uniforms(
         mat.shadow_uv = uv;
     }
 }
+
 
 
 fn make_mask_image(width: u32, height: u32) -> Image {
