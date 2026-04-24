@@ -1,12 +1,14 @@
 
 use bevy::{
     asset::RenderAssetUsages, camera::{CameraProjection, RenderTarget, visibility::RenderLayers}, color::palettes::css::PURPLE, mesh::{Indices, MeshVertexAttribute, VertexAttributeValues, MeshVertexBufferLayoutRef, PrimitiveTopology, VertexFormat}, prelude::*, render::render_resource::{
-    AsBindGroup, Extent3d, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat, TextureUsages, VertexAttribute}, shader::ShaderRef, sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin}, transform::components::GlobalTransform, window::PrimaryWindow
+    AsBindGroup, Extent3d, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat, TextureUsages, VertexAttribute}, shader::ShaderRef, sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin}, transform::components::GlobalTransform, window::PrimaryWindow,
+    window::WindowResized,
 };
 use shader_demon::{
     materials::{light_material::{self, LightMaterial}, shadow_material::CustomMaterial},
     shadow_mesh::{self, mesh_attributes, mesh_builder},
 };
+
 
 
 pub const ATTRIBUTE_EDGE_N: MeshVertexAttribute =
@@ -26,6 +28,7 @@ fn main() {
         ))
         .add_systems(Startup, setup_game)
         .add_systems(Update, (update_material_uniforms, move_obj, update_light_uniforms))
+        .add_systems(Update, resize_shadow_mask)
         .run();
 }
 
@@ -56,6 +59,8 @@ fn setup_game(
     let h = win.resolution.physical_height();
 
     let mask_handle = images.add(make_mask_image(w, h));
+    commands.insert_resource(ShadowMaskHandle(mask_handle.clone())); 
+
     //camera that only renders 1 or 0, 1 if mesh has tag and layer shadow -
     commands.spawn(( 
         Camera2d,
@@ -142,7 +147,7 @@ commands.spawn((
 }
 
 
-#[derive(Component)] //
+#[derive(Component)] //shadow mesh tag
 struct ParallelogramObjectTag;
 
 #[derive(Component)]
@@ -152,6 +157,32 @@ struct MoveSpeed(f32);
 struct MainCam;
 #[derive(Component)]
 struct MaskCam;
+
+
+
+#[derive(Resource, Clone)]
+struct ShadowMaskHandle(pub Handle<Image>);
+
+//resize the mask on change
+fn resize_shadow_mask (
+    mut resized: MessageReader<WindowResized>,
+    mut images: ResMut<Assets<Image>>,
+    mask: Res<ShadowMaskHandle>,
+) {
+        for e in resized.read() {
+        let width = e.width.max(1.0) as u32;
+        let height = e.height.max(1.0) as u32;
+
+        if let Some(image) = images.get_mut(&mask.0) {
+            image.resize(Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            });
+        }
+    }
+}
+
 
 
 fn move_obj(
@@ -184,6 +215,11 @@ fn move_obj(
     }
 }
 
+// udpates the shader unifrom and vertex buffer for every CustomMaterial instance *shadow mesh
+
+/// - takes the world transform of the shadow-casting object
+/// - computes the camera projection matrix
+/// - passes time and object position data to the shader
 
 fn update_material_uniforms(
     time: Res<Time>,
@@ -193,21 +229,22 @@ fn update_material_uniforms(
     mut materials: ResMut<Assets<CustomMaterial>>,
 ) {
     let t = time.elapsed_secs();
-
+    //world transformation of the shadow mesh
     let mesh_gt = q_mesh.single().unwrap();
     let world_affine = mesh_gt.affine();
     let world = Mat4::from(world_affine);
 
+    //get camera transformation and orientation
     let (proj_enum, cam_gt) = q_cam.single().unwrap();
-
+    //build view matrix from camera transform.
     let view = Mat4::from(cam_gt.affine()).inverse();
-
+    //convert bevy projection into a camera compatible matrix
     let proj = match proj_enum {
         Projection::Orthographic(p) => p.get_clip_from_view(),
         Projection::Perspective(p)  => p.get_clip_from_view(),
         Projection::Custom(p)       => p.get_clip_from_view(),
     };
-
+    // combined matrix used to transform world coordinates into clip space.
     let view_proj = proj * view;
  
     for (_, mat) in materials.iter_mut() {
@@ -219,6 +256,8 @@ fn update_material_uniforms(
 
 }
 
+
+//same function as update shadow mesh insance
 fn update_light_uniforms(
     q_light_world: Query<&GlobalTransform, With<MoveSpeed>>, 
     q_cam: Query<(&Projection, &GlobalTransform), With<MainCam>>,
@@ -250,7 +289,8 @@ fn update_light_uniforms(
 }
 
 
-
+//offscreen camera mask
+//rendered in a different pass and then can be sampled
 fn make_mask_image(width: u32, height: u32) -> Image {
     let mut img = Image::new_fill(
         Extent3d { width, height, depth_or_array_layers: 1 },
