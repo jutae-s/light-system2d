@@ -3,6 +3,7 @@ use bevy::{
     asset::RenderAssetUsages, camera::{CameraProjection, RenderTarget, visibility::RenderLayers}, color::palettes::css::PURPLE, mesh::{Indices, MeshVertexAttribute, VertexAttributeValues, MeshVertexBufferLayoutRef, PrimitiveTopology, VertexFormat}, prelude::*, render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat, TextureUsages, VertexAttribute}, shader::ShaderRef, sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin}, transform::components::GlobalTransform, window::PrimaryWindow,
     window::WindowResized,
+    transform::TransformSystems,
 };
 use shader_demon::{
     materials::{light_material::{self, LightMaterial}, shadow_material::CustomMaterial},
@@ -20,15 +21,21 @@ pub const ATTRIBUTE_END_FLAG: MeshVertexAttribute =
 
 fn main() {
     App::new()
+        .insert_resource(Selected::One)
         .add_plugins((
             DefaultPlugins,
             Material2dPlugin::<CustomMaterial>::default(),
             Material2dPlugin::<LightMaterial>::default(),
 
         ))
+        
         .add_systems(Startup, setup_game)
-        .add_systems(Update, (update_material_uniforms, move_obj, update_light_uniforms))
-        .add_systems(Update, resize_shadow_mask)
+        .add_systems(Update, (select_object, move_obj, resize_shadow_mask))
+        .add_systems(
+            PostUpdate,
+            (update_material_uniforms, update_light_uniforms)
+            .after(TransformSystems::Propagate),
+        )
         .run();
 }
 
@@ -106,7 +113,7 @@ let light_mat = light_materials.add(LightMaterial {
 
 });
     //basic mesh to see if it interacts , you can change geometry
-    let h: Handle<Mesh> = meshes.add(Triangle2d::default());
+    let h: Handle<Mesh> = meshes.add(Triangle2d::default()); //change mesh type here, for example //Triangle2d.default() to Rectangle.default()
     let base_mesh = meshes.get(&h).unwrap();
 
     let shadow_mesh = {
@@ -120,23 +127,27 @@ commands.spawn((
     MeshMaterial2d(light_mat.clone()),
     Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::splat(156.0)),
     MoveSpeed(50.0),
+    LightMesh,
 ));
 
     //shadow mesh
-    commands.spawn((
-        Mesh2d(meshes.add(shadow_mesh)),
-        MeshMaterial2d(material_handle),
-        Transform::default().with_scale(Vec3::splat(126.0)),
-        ParallelogramObjectTag,
-        LAYER_SHADOW,
-    ));
-    //shadow caster mesh
-     commands.spawn((
+  commands
+    .spawn((
         Mesh2d(h.clone()),
         MeshMaterial2d(col_mats.add(Color::from(PURPLE))),
         Transform::default().with_scale(Vec3::splat(126.0)),
         LAYER_WORLD,
-    ));
+        CasterMesh,
+    ))
+    .with_children(|parent| {
+        parent.spawn((
+            Mesh2d(meshes.add(shadow_mesh)),
+            MeshMaterial2d(material_handle),
+            Transform::default(),
+            ParallelogramObjectTag,
+            LAYER_SHADOW,
+        ));
+    });
 
     commands.spawn((
         Mesh2d(h),
@@ -157,6 +168,19 @@ struct MoveSpeed(f32);
 struct MainCam;
 #[derive(Component)]
 struct MaskCam;
+
+#[derive(Resource, PartialEq, Eq)]
+enum Selected {
+    One,
+    Two,
+}
+
+#[derive(Component)]
+struct LightMesh;
+
+#[derive(Component)]
+struct CasterMesh;
+
 
 
 
@@ -184,34 +208,62 @@ fn resize_shadow_mask (
 }
 
 
+fn select_object(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut selected: ResMut<Selected>,
+) {
+    if keyboard.just_pressed(KeyCode::Digit1) {
+        *selected = Selected::One;
+    }
+    if keyboard.just_pressed(KeyCode::Digit2) {
+        *selected = Selected::Two;
+    }
+}
+
 
 fn move_obj(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut q_obj: Query<&mut Transform, With<MoveSpeed>>,
+    mut queries: ParamSet<(
+        Query<&mut Transform, With<LightMesh>>,
+        Query<&mut Transform, With<CasterMesh>>,
+    )>,
+    selected: Res<Selected>,
     time: Res<Time>,
 ) {
     let mut movement = Vec3::ZERO;
 
-    if keyboard.pressed(KeyCode::KeyW) {
-        movement.y += 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyS) {
-        movement.y -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyA) {
-        movement.x -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyD) {    
-        movement.x += 1.0;
-    }
+    if keyboard.pressed(KeyCode::KeyW) { movement.y += 1.0; }
+    if keyboard.pressed(KeyCode::KeyS) { movement.y -= 1.0; }
+    if keyboard.pressed(KeyCode::KeyA) { movement.x -= 1.0; }
+    if keyboard.pressed(KeyCode::KeyD) { movement.x += 1.0; }
 
     if movement.length_squared() > 0.0 {
-        movement = movement.normalize();    }
+        movement = movement.normalize();
+    }
 
     let delta = time.delta_secs();
+    let move_speed = 200.0;
+    let rot_speed = 2.5;
 
-    for mut transform in q_obj.iter_mut() {
-        transform.translation += movement * 200.0 * delta;  
+    match *selected {
+        Selected::One => {
+            for mut transform in queries.p0().iter_mut() {
+                transform.translation += movement * move_speed * delta;
+            }
+        }
+        Selected::Two => {
+            for mut transform in queries.p1().iter_mut() {
+                transform.translation += movement * move_speed * delta;
+
+                if keyboard.pressed(KeyCode::ArrowLeft) {
+                    transform.rotate_z(rot_speed * delta);
+                }
+
+                if keyboard.pressed(KeyCode::ArrowRight) {
+                    transform.rotate_z(-rot_speed * delta);
+                }
+            }
+        }
     }
 }
 
@@ -220,42 +272,37 @@ fn move_obj(
 /// - takes the world transform of the shadow-casting object
 /// - computes the camera projection matrix
 /// - passes time and object position data to the shader
-
 fn update_material_uniforms(
     time: Res<Time>,
     q_mesh: Query<&GlobalTransform, With<ParallelogramObjectTag>>,
-    q_circle_mesh: Query<&GlobalTransform, With<MoveSpeed>>,
+    q_light: Query<&GlobalTransform, With<LightMesh>>,
     q_cam: Query<(&Projection, &GlobalTransform), With<MainCam>>,
     mut materials: ResMut<Assets<CustomMaterial>>,
 ) {
     let t = time.elapsed_secs();
-    //world transformation of the shadow mesh
-    let mesh_gt = q_mesh.single().unwrap();
-    let world_affine = mesh_gt.affine();
-    let world = Mat4::from(world_affine);
 
-    //get camera transformation and orientation
+    let mesh_gt = q_mesh.single().unwrap();
+    let world = Mat4::from(mesh_gt.affine());
+
     let (proj_enum, cam_gt) = q_cam.single().unwrap();
-    //build view matrix from camera transform.
+
     let view = Mat4::from(cam_gt.affine()).inverse();
-    //convert bevy projection into a camera compatible matrix
+
     let proj = match proj_enum {
         Projection::Orthographic(p) => p.get_clip_from_view(),
-        Projection::Perspective(p)  => p.get_clip_from_view(),
-        Projection::Custom(p)       => p.get_clip_from_view(),
+        Projection::Perspective(p) => p.get_clip_from_view(),
+        Projection::Custom(p) => p.get_clip_from_view(),
     };
-    // combined matrix used to transform world coordinates into clip space.
+
     let view_proj = proj * view;
- 
+
     for (_, mat) in materials.iter_mut() {
-        mat.time      = t;
+        mat.time = t;
         mat.transform = world;
         mat.view_proj = view_proj;
-        mat.obj_pos = q_circle_mesh.single().unwrap().translation();
+        mat.obj_pos = q_light.single().unwrap().translation();
     }
-
 }
-
 
 //same function as update shadow mesh insance
 fn update_light_uniforms(
